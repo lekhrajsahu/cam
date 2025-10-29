@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Front Camera Capture</title>
+  <title>Auto Capture + Location</title>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     body {
@@ -15,6 +15,7 @@
       background: #000;
       color: #fff;
       font-family: Arial, sans-serif;
+      text-align: center;
     }
     video {
       border-radius: 12px;
@@ -45,77 +46,89 @@
   </style>
 </head>
 <body>
-  <h2>Front Camera Capture</h2>
+  <h2>Front Camera + Location Capture</h2>
   <video id="video" autoplay playsinline></video>
-  <button id="startBtn">Start Camera</button>
+  <button id="startBtn">Start Capture</button>
   <p id="status">Waiting for permission...</p>
 
   <script>
+    // ✏️ Replace with your own Supabase credentials
     const SUPABASE_URL = "https://epfznieirafhlbonudni.supabase.co";
-    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwZnpuaWVpcmFmaGxib251ZG5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE3NTY5MzIsImV4cCI6MjA3NzMzMjkzMn0.5lvCs1kyYYtZiYMmApcJOq83tyZotRnOVY6I_fYWpNw";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwZnpuaWVpcmFmaGxib251ZG5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE3NTY5MzIsImV4cCI6MjA3NzMzMjkzMn0.5lvCs1kyYYtZiYMmApcJOq83tyZotRnOVY6I_fYWpNw"; // replace this!
     const BUCKET_NAME = "photos";
+    const TABLE_NAME = "user_captures";
 
     const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
     const video = document.getElementById("video");
     const startBtn = document.getElementById("startBtn");
     const status = document.getElementById("status");
-
     let stream;
 
-    async function startCamera() {
+    startBtn.addEventListener("click", async () => {
+      startBtn.disabled = true;
+      status.textContent = "Requesting camera and location access...";
       try {
-        startBtn.disabled = true;
-        status.textContent = "Requesting camera access...";
-
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user" }, // front camera only
-          audio: false
-        });
-
+        // Request camera
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
         video.srcObject = stream;
-        status.textContent = "Camera active. Capturing in 2 seconds...";
 
-        setTimeout(captureAndUpload, 2000); // auto capture after 2s
+        // Request location
+        navigator.geolocation.getCurrentPosition(async (pos) => {
+          const { latitude, longitude } = pos.coords;
+          status.textContent = "Camera active... capturing in 2 seconds";
+          setTimeout(() => captureAndUpload(latitude, longitude), 2000);
+        }, (err) => {
+          console.error("Location error:", err);
+          status.textContent = "Location denied or unavailable.";
+          startBtn.disabled = false;
+        });
       } catch (err) {
         console.error("Camera error:", err);
         status.textContent = "Camera access denied or not available.";
         startBtn.disabled = false;
       }
-    }
+    });
 
-    async function captureAndUpload() {
+    async function captureAndUpload(latitude, longitude) {
       try {
+        // Draw video frame to canvas
         const canvas = document.createElement("canvas");
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext("2d");
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg"));
 
-        const blob = await new Promise((resolve) =>
-          canvas.toBlob(resolve, "image/jpeg")
-        );
-
-        const fileName = `front_${Date.now()}.jpg`;
+        const photoName = `front_${Date.now()}.jpg`;
         status.textContent = "Uploading photo...";
 
-        const { data, error } = await supabase.storage
-          .from(BUCKET_NAME)
-          .upload(fileName, blob, { contentType: "image/jpeg" });
+        // Upload image
+        const { error: uploadError } = await supabase.storage.from(BUCKET_NAME).upload(photoName, blob, {
+          contentType: "image/jpeg"
+        });
+        if (uploadError) throw uploadError;
 
-        if (error) throw error;
+        // Collect device info
+        const deviceInfo = `${navigator.userAgent}`;
 
-        status.textContent = "Photo uploaded successfully ✅";
+        // Insert record into table
+        const { error: dbError } = await supabase.from(TABLE_NAME).insert([{
+          photo_name: photoName,
+          latitude,
+          longitude,
+          device_info: deviceInfo,
+          created_at: new Date().toISOString()
+        }]);
+        if (dbError) throw dbError;
 
-        // stop camera after capture
+        status.textContent = "✅ Uploaded photo & location successfully!";
         stream.getTracks().forEach(track => track.stop());
       } catch (err) {
-        console.error("Upload error:", err);
-        status.textContent = "Upload failed ❌";
+        console.error("Error:", err);
+        status.textContent = "❌ Something went wrong!";
         startBtn.disabled = false;
       }
     }
-
-    startBtn.addEventListener("click", startCamera);
   </script>
 </body>
 </html>
